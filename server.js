@@ -9,6 +9,7 @@ const admin = require("firebase-admin");
 
 const {
   PAYMONGO_SECRET_KEY,
+  SERP_API_KEY,
   PAYMONGO_WEBHOOK_SECRET,
   PAYMONGO_MODE = "test",
   PAYMONGO_QR_EXPIRY_SECONDS,
@@ -115,6 +116,43 @@ async function getCustomerEmail(customerId) {
 app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
+app.get("/api/search", async (req, res) => {
+  try {
+    const q = (req.query.q || "").trim();
+    if (!q) {
+      return res.status(400).json({ error: "Missing q" });
+    }
+
+    if (!SERP_API_KEY) {
+      return res.status(500).json({ error: "SERP_API_KEY not configured" });
+    }
+
+    const response = await axios.get("https://serpapi.com/search.json", {
+      params: {
+        engine: "google",
+        q,
+        api_key: SERP_API_KEY,
+        num: 10,
+        hl: "en",
+        gl: "ph",
+      },
+      timeout: 15000,
+    });
+
+    const results = (response.data?.organic_results || []).map((item) => ({
+      title: item.title || "",
+      snippet: item.snippet || "",
+      link: item.link || "",
+      source: item.source || "",
+    }));
+
+    return res.json({ query: q, results });
+  } catch (err) {
+    console.error("serp search error", err?.response?.data || err.message || err);
+    return res.status(500).json({ error: "Search failed" });
+  }
+});
+
 
 app.post("/paymongo/create-qr", async (req, res) => {
   try {
