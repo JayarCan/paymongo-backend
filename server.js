@@ -43,6 +43,10 @@ app.use(express.json());
 
 const PAYMONGO_API = "https://api.paymongo.com/v1";
 
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
+
 function paymongoAuthHeader() {
   const token = Buffer.from(`${PAYMONGO_SECRET_KEY}:`).toString("base64");
   return `Basic ${token}`;
@@ -113,9 +117,143 @@ async function getCustomerEmail(customerId) {
   return data.email || data.userEmail || null;
 }
 
+// Calculate distance between two coordinates (in meters)
+function haversineDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371e3; // Earth radius in meters
+  const φ1 = (lat1 * Math.PI) / 180;
+  const φ2 = (lat2 * Math.PI) / 180;
+  const Δφ = ((lat2 - lat1) * Math.PI) / 180;
+  const Δλ = ((lon2 - lon1) * Math.PI) / 180;
+
+  const a =
+    Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+    Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return R * c;
+}
+
+// Check if location is inside any safe zone and notify parent
+async function checkGeofencesAndNotify(kidId, location) {
+  try {
+    const zonesSnap = await db.collection("safezones")
+      .where("kidId", "==", kidId)
+      .where("isActive", "==", true)
+      .get();
+
+    if (zonesSnap.empty) return;
+
+    // Get previous geofence state
+    const stateRef = db.collection("geofence_states").doc(kidId);
+    const stateSnap = await stateRef.get();
+    const prevStates = stateSnap.exists ? stateSnap.data().zones || {} : {};
+
+    const newStates = {};
+
+    for (const doc of zonesSnap.docs) {
+      const zone = doc.data();
+      const distance = haversineDistance(
+        location.latitude,
+        location.longitude,
+        zone.latitude,
+        zone.longitude
+      );
+
+      const isInside = distance <= zone.radius;
+      const wasInside = prevStates[doc.id] === true;
+
+      newStates[doc.id] = isInside;
+
+      // Detect zone entry/exit
+      if (isInside && !wasInside) {
+        await notifyParent(kidId, {
+          type: "geofence_enter",
+          title: "Entered Safe Zone",
+          body: `Your child entered "${zone.name}"`,
+          data: { kidId, zoneId: doc.id, zoneName: zone.name, action: "enter" },
+        });
+      } else if (!isInside && wasInside) {
+        await notifyParent(kidId, {
+          type: "geofence_exit",
+          title: "⚠️ Left Safe Zone",
+          body: `Your child left "${zone.name}"`,
+          data: { kidId, zoneId: doc.id, zoneName: zone.name, action: "exit" },
+          priority: "high",
+        });
+      }
+    }
+
+    // Save new state
+    await stateRef.set({ zones: newStates, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+  } catch (err) {
+    console.error("geofence check error:", err);
+  }
+}
+
+// Send FCM notification to parent (NO SMS NEEDED - FREE!)
+async function notifyParent(kidId, notification) {
+  try {
+    // Find parent for this kid
+    const pairingsSnap = await db.collection("pairings")
+      .where("kidId", "==", kidId)
+      .where("isActive", "==", true)
+      .get();
+
+    if (pairingsSnap.empty) {
+      console.log(`No active pairing found for kid ${kidId}`);
+      return;
+    }
+
+    for (const pairingDoc of pairingsSnap.docs) {
+      const pairing = pairingDoc.data();
+      const parentId = pairing.parentId;
+
+      // Get parent's FCM token
+      const deviceSnap = await db.collection("devices").doc(parentId).get();
+      if (!deviceSnap.exists) continue;
+
+      const fcmToken = deviceSnap.data().fcmToken;
+      if (!fcmToken) continue;
+
+      // Send FCM push notification
+      const message = {
+        token: fcmToken,
+        notification: {
+          title: notification.title,
+          body: notification.body,
+        },
+        data: {
+          type: notification.type || "alert",
+          kidId: kidId,
+          ...Object.fromEntries(
+            Object.entries(notification.data || {}).map(([k, v]) => [k, String(v)])
+          ),
+        },
+        android: {
+          priority: notification.priority === "high" ? "high" : "normal",
+          notification: {
+            channelId: notification.priority === "high" ? "alerts_high" : "alerts",
+            sound: notification.priority === "high" ? "alarm" : "default",
+          },
+        },
+      };
+
+      await admin.messaging().send(message);
+      console.log(`FCM sent to parent ${parentId} for kid ${kidId}: ${notification.type}`);
+    }
+  } catch (err) {
+    console.error("notify parent error:", err);
+  }
+}
+
+// ============================================
+// HEALTH & SEARCH ENDPOINTS
+// ============================================
+
 app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
+
 app.get("/api/search", async (req, res) => {
   try {
     const q = (req.query.q || "").trim();
@@ -153,6 +291,9 @@ app.get("/api/search", async (req, res) => {
   }
 });
 
+// ============================================
+// PAYMONGO ENDPOINTS
+// ============================================
 
 app.post("/paymongo/create-qr", async (req, res) => {
   try {
@@ -338,8 +479,12 @@ app.post("/paymongo/webhook", async (req, res) => {
       { merge: true },
     );
   }
-  // ============================================
-// SILENT CALCULATOR - LOCATION TRACKING MODULE
+
+  return res.json({ received: true });
+});
+
+// ============================================
+// SILENT CALCULATOR - LOCATION TRACKING
 // ============================================
 
 // Store kid's location (called every 3 seconds by kid's app)
@@ -691,141 +836,9 @@ app.post("/api/alert/notify", async (req, res) => {
 });
 
 // ============================================
-// HELPER FUNCTIONS
+// START SERVER
 // ============================================
 
-// Calculate distance between two coordinates (in meters)
-function haversineDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371e3; // Earth radius in meters
-  const φ1 = (lat1 * Math.PI) / 180;
-  const φ2 = (lat2 * Math.PI) / 180;
-  const Δφ = ((lat2 - lat1) * Math.PI) / 180;
-  const Δλ = ((lon2 - lon1) * Math.PI) / 180;
-
-  const a =
-    Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
-    Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-  return R * c;
-}
-
-// Check if location is inside any safe zone and notify parent
-async function checkGeofencesAndNotify(kidId, location) {
-  try {
-    const zonesSnap = await db.collection("safezones")
-      .where("kidId", "==", kidId)
-      .where("isActive", "==", true)
-      .get();
-
-    if (zonesSnap.empty) return;
-
-    // Get previous geofence state
-    const stateRef = db.collection("geofence_states").doc(kidId);
-    const stateSnap = await stateRef.get();
-    const prevStates = stateSnap.exists ? stateSnap.data().zones || {} : {};
-
-    const newStates = {};
-
-    for (const doc of zonesSnap.docs) {
-      const zone = doc.data();
-      const distance = haversineDistance(
-        location.latitude,
-        location.longitude,
-        zone.latitude,
-        zone.longitude
-      );
-
-      const isInside = distance <= zone.radius;
-      const wasInside = prevStates[doc.id] === true;
-
-      newStates[doc.id] = isInside;
-
-      // Detect zone entry/exit
-      if (isInside && !wasInside) {
-        await notifyParent(kidId, {
-          type: "geofence_enter",
-          title: "Entered Safe Zone",
-          body: `Your child entered "${zone.name}"`,
-          data: { kidId, zoneId: doc.id, zoneName: zone.name, action: "enter" },
-        });
-      } else if (!isInside && wasInside) {
-        await notifyParent(kidId, {
-          type: "geofence_exit",
-          title: "⚠️ Left Safe Zone",
-          body: `Your child left "${zone.name}"`,
-          data: { kidId, zoneId: doc.id, zoneName: zone.name, action: "exit" },
-          priority: "high",
-        });
-      }
-    }
-
-    // Save new state
-    await stateRef.set({ zones: newStates, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-  } catch (err) {
-    console.error("geofence check error:", err);
-  }
-}
-
-// Send FCM notification to parent (NO SMS NEEDED - FREE!)
-async function notifyParent(kidId, notification) {
-  try {
-    // Find parent for this kid
-    const pairingsSnap = await db.collection("pairings")
-      .where("kidId", "==", kidId)
-      .where("isActive", "==", true)
-      .get();
-
-    if (pairingsSnap.empty) {
-      console.log(`No active pairing found for kid ${kidId}`);
-      return;
-    }
-
-    for (const pairingDoc of pairingsSnap.docs) {
-      const pairing = pairingDoc.data();
-      const parentId = pairing.parentId;
-
-      // Get parent's FCM token
-      const deviceSnap = await db.collection("devices").doc(parentId).get();
-      if (!deviceSnap.exists) continue;
-
-      const fcmToken = deviceSnap.data().fcmToken;
-      if (!fcmToken) continue;
-
-      // Send FCM push notification
-      const message = {
-        token: fcmToken,
-        notification: {
-          title: notification.title,
-          body: notification.body,
-        },
-        data: {
-          type: notification.type || "alert",
-          kidId: kidId,
-          ...Object.fromEntries(
-            Object.entries(notification.data || {}).map(([k, v]) => [k, String(v)])
-          ),
-        },
-        android: {
-          priority: notification.priority === "high" ? "high" : "normal",
-          notification: {
-            channelId: notification.priority === "high" ? "alerts_high" : "alerts",
-            sound: notification.priority === "high" ? "alarm" : "default",
-          },
-        },
-      };
-
-      await admin.messaging().send(message);
-      console.log(`FCM sent to parent ${parentId} for kid ${kidId}: ${notification.type}`);
-    }
-  } catch (err) {
-    console.error("notify parent error:", err);
-  }
-}
-
-  return res.json({ received: true });
-});
-
 app.listen(PORT, () => {
-  console.log(`PayMongo backend listening on ${PORT}`);
+  console.log(`Server listening on port ${PORT}`);
 });
