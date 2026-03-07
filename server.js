@@ -14,8 +14,12 @@ const {
   PAYMONGO_MODE = "test",
   PAYMONGO_QR_EXPIRY_SECONDS,
   FIREBASE_SERVICE_ACCOUNT_JSON,
+  SILENT_CALC_FIREBASE_JSON, // For SilentCalculator - use this if available
   PORT = 8080,
 } = process.env;
+
+// Use SilentCalculator Firebase if available, otherwise fallback to default
+const FIREBASE_JSON = SILENT_CALC_FIREBASE_JSON || FIREBASE_SERVICE_ACCOUNT_JSON;
 
 if (!PAYMONGO_SECRET_KEY) {
   throw new Error("Missing PAYMONGO_SECRET_KEY env var");
@@ -25,9 +29,9 @@ if (!PAYMONGO_WEBHOOK_SECRET) {
 }
 
 if (!admin.apps.length) {
-  if (FIREBASE_SERVICE_ACCOUNT_JSON) {
+  if (FIREBASE_JSON) {
     admin.initializeApp({
-      credential: admin.credential.cert(JSON.parse(FIREBASE_SERVICE_ACCOUNT_JSON)),
+      credential: admin.credential.cert(JSON.parse(FIREBASE_JSON)),
     });
   } else {
     admin.initializeApp();
