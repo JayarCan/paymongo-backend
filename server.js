@@ -219,26 +219,22 @@ async function notifyParent(kidId, notification) {
       const fcmToken = deviceSnap.data().fcmToken;
       if (!fcmToken) continue;
 
-      // Send FCM push notification
+      // Send data-only FCM message so Android app handles alert logic in onMessageReceived
+      const isHighPriority = notification.priority === "high";
       const message = {
         token: fcmToken,
-        notification: {
-          title: notification.title,
-          body: notification.body,
-        },
         data: {
           type: notification.type || "alert",
           kidId: kidId,
+          title: String(notification.title || "Silent Calculator Alert"),
+          body: String(notification.body || ""),
+          priority: isHighPriority ? "high" : "normal",
           ...Object.fromEntries(
             Object.entries(notification.data || {}).map(([k, v]) => [k, String(v)])
           ),
         },
         android: {
-          priority: notification.priority === "high" ? "high" : "normal",
-          notification: {
-            channelId: notification.priority === "high" ? "alerts_high" : "alerts",
-            sound: notification.priority === "high" ? "alarm" : "default",
-          },
+          priority: isHighPriority ? "high" : "normal",
         },
       };
 
