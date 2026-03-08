@@ -490,7 +490,7 @@ app.post("/paymongo/webhook", async (req, res) => {
 // Store kid's location (called every 3 seconds by kid's app)
 app.post("/api/location/update", async (req, res) => {
   try {
-    const { kidId, latitude, longitude, accuracy, battery, timestamp } = req.body;
+    const { kidId, latitude, longitude, speed, event, accuracy, battery, timestamp } = req.body;
     
     if (!kidId || latitude == null || longitude == null) {
       return res.status(400).json({ error: "kidId, latitude, longitude required" });
@@ -499,6 +499,8 @@ app.post("/api/location/update", async (req, res) => {
     const locationData = {
       latitude: Number(latitude),
       longitude: Number(longitude),
+      speed: Number(speed) || 0,
+      event: (event || "LIVE_UPDATE").toString(),
       accuracy: Number(accuracy) || 0,
       battery: Number(battery) || null,
       timestamp: timestamp || Date.now(),
