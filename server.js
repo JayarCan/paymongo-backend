@@ -52,8 +52,8 @@ const PAYMONGO_API = "https://api.paymongo.com/v1";
 // ============================================
 
 function paymongoAuthHeader() {
-  const token = Buffer.from(${PAYMONGO_SECRET_KEY}:).toString("base64");
-  return Basic ${token};
+  const token = Buffer.from(`${PAYMONGO_SECRET_KEY}:`).toString("base64");
+  return `Basic ${token}`;
 }
 
 function timingSafeEqual(a, b) {
@@ -76,7 +76,7 @@ function verifyWebhookSignature(rawBody, signatureHeader) {
   const signature = parts[signatureKey];
   if (!timestamp || !signature) return false;
 
-  const signedPayload = ${timestamp}.${rawBody};
+  const signedPayload = `${timestamp}.${rawBody}`;
   const expected = crypto
     .createHmac("sha256", PAYMONGO_WEBHOOK_SECRET)
     .update(signedPayload)
@@ -94,7 +94,7 @@ function verifyWebhookSignature(rawBody, signatureHeader) {
 async function paymongoRequest(method, path, data) {
   const response = await axios({
     method,
-    url: ${PAYMONGO_API}${path},
+    url: `${PAYMONGO_API}${path}`,
     headers: {
       Authorization: paymongoAuthHeader(),
       "Content-Type": "application/json",
@@ -173,14 +173,14 @@ async function checkGeofencesAndNotify(kidId, location) {
         await notifyParent(kidId, {
           type: "geofence_enter",
           title: "Entered Safe Zone",
-          body: Your child entered "${zone.name}",
+          body: `Your child entered "${zone.name}"`,
           data: { kidId, zoneId: doc.id, zoneName: zone.name, action: "enter" },
         });
       } else if (!isInside && wasInside) {
         await notifyParent(kidId, {
           type: "geofence_exit",
           title: "⚠️ Left Safe Zone",
-          body: Your child left "${zone.name}",
+          body: `Your child left "${zone.name}"`,
           data: { kidId, zoneId: doc.id, zoneName: zone.name, action: "exit" },
           priority: "high",
         });
@@ -204,7 +204,7 @@ async function notifyParent(kidId, notification) {
       .get();
 
     if (pairingsSnap.empty) {
-      console.log(No active pairing found for kid ${kidId});
+      console.log(`No active pairing found for kid ${kidId}`);
       return;
     }
 
@@ -239,7 +239,7 @@ async function notifyParent(kidId, notification) {
       };
 
       await admin.messaging().send(message);
-      console.log(FCM sent to parent ${parentId} for kid ${kidId}: ${notification.type});
+      console.log(`FCM sent to parent ${parentId} for kid ${kidId}: ${notification.type}`);
     }
   } catch (err) {
     console.error("notify parent error:", err);
@@ -320,7 +320,7 @@ app.post("/paymongo/create-qr", async (req, res) => {
           currency: "PHP",
           payment_method_allowed: ["qrph"],
           capture_type: "automatic",
-          description: FastGas Order ${orderId},
+          description: `FastGas Order ${orderId}`,
           metadata: {
             orderId,
           },
@@ -372,7 +372,7 @@ app.post("/paymongo/create-qr", async (req, res) => {
 
     const attached = await paymongoRequest(
       "post",
-      /payment_intents/${intentId}/attach,
+      `/payment_intents/${intentId}/attach`,
       attachPayload,
     );
 
@@ -598,7 +598,7 @@ app.post("/api/safezone", async (req, res) => {
     await notifyParent(kidId, {
       type: "safezone_created",
       title: "Safe Zone Created",
-      body: New safe zone "${name}" has been set up,
+      body: `New safe zone "${name}" has been set up`,
       data: { zoneId: docRef.id, ...zoneData },
     });
 
@@ -698,7 +698,7 @@ app.post("/api/pairing/verify", async (req, res) => {
     const parentId = codeData.parentId;
 
     // Create pairing relationship
-    await db.collection("pairings").doc(${parentId}_${kidId}).set({
+    await db.collection("pairings").doc(`${parentId}_${kidId}`).set({
       parentId,
       kidId,
       kidName: kidName || "Child Device",
@@ -719,7 +719,7 @@ app.post("/api/pairing/verify", async (req, res) => {
     await notifyParent(kidId, {
       type: "device_paired",
       title: "Device Paired",
-      body: ${kidName || "Child device"} has been successfully paired,
+      body: `${kidName || "Child device"} has been successfully paired`,
       data: { kidId, kidName },
     });
 
@@ -842,5 +842,5 @@ app.post("/api/alert/notify", async (req, res) => {
 // ============================================
 
 app.listen(PORT, () => {
-  console.log(Server listening on port ${PORT});
+  console.log(`Server listening on port ${PORT}`);
 });
